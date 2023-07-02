@@ -29,6 +29,18 @@ public static class NetworkManager
     //事件监听列表
     private static Dictionary<NetEvent, EventListener> eventListens = new Dictionary<NetEvent, EventListener>();
 
+    public delegate void MsgListener(byte[] bytes);
+
+    private static Dictionary<string, MsgListener> msgListeners = new Dictionary<string, MsgListener>();
+
+    //收到消息列表
+    static List<byte[]> msgList = new List<byte[]>();
+
+    static int msgCount = 0;
+
+    readonly static int MAX_MESSSAGE_FIRE = 10;
+
+   
    //添加事件监听
    public static void AddEventListener(NetEvent netEvent, EventListener listener)
     {
@@ -90,6 +102,8 @@ public static class NetworkManager
         writeQueue = new Queue<ByteArray>();
         isConneciting = false;
         isClosing = false;
+        msgList = new List<byte[]>();
+        msgCount = 0;
     }
 
     //连接回调
@@ -102,7 +116,7 @@ public static class NetworkManager
             Debug.Log("Socket Connect Success");
             FireEvent(NetEvent.ConnectSucc, "");
             isConneciting = false;
-
+            socket.BeginReceive(readBuff.bytes, readBuff.writeIdx, readBuff.remain, 0, ReceiveCallback,socket);
         }
         catch(SocketException ex)
         {
@@ -110,6 +124,50 @@ public static class NetworkManager
             FireEvent(NetEvent.ConnectFail, ex.ToString());
             isConneciting = false;
         }
+    }
+
+    public static void ReceiveCallback(IAsyncResult ar)
+    {
+        try
+        {
+            Socket socket = (Socket)ar.AsyncState;
+            int count = socket.EndReceive(ar);
+            if(count == 0)
+            {
+                Close();
+                return;
+            }
+            readBuff.writeIdx += count;
+            onReceiveData();
+            if(readBuff.remain < 8)
+            {
+                readBuff.MoveBytes();
+                readBuff.ReSize(readBuff.length * 2);
+            }
+            socket.BeginReceive(readBuff.bytes, readBuff.writeIdx, readBuff.remain, 0, ReceiveCallback, socket);
+        }catch(SocketException ex)
+        {
+            Debug.Log("Socket Receive fail" + ex.ToString());
+        }
+    }
+
+    //数据处理
+    public static void onReceiveData()
+    {
+        if(readBuff.length <= 2)
+        {
+            return;
+        }
+        int readIdx = readBuff.readIdx;
+        byte[] bytes = readBuff.bytes;
+        Int16 bodyLength = (Int16)((bytes[readIdx + 1] << 8) | bytes[readIdx]);
+        if(readBuff.length < bodyLength)
+        {
+            return;
+        }
+        readBuff.readIdx += 2;
+        int nameCount = 0;
+      //  string protoN
     }
 
     //关闭连接
@@ -163,7 +221,99 @@ public static class NetworkManager
 
         //写入队列
         ByteArray ba = new ByteArray(sendBytes);
+        int count = 0;
+        lock(writeQueue){
+            writeQueue.Enqueue(ba);
+            count = writeQueue.Count;
+            if(count == 1)
+            {
+                socket.BeginSend(sendBytes, 0, sendBytes.Length, 0, SendCallback, socket);
+            }
+        }
     }
+    
+    public static void SendCallback(IAsyncResult ar)
+    {
+        //获取state EndSend 的处理，
+        Socket socket = (Socket)ar.AsyncState;
+        //状态判断 
+        if(socket == null || !socket.Connected)
+        {
+            return;
+        }
+        //EndSend
+        int count = socket.EndSend(ar);
+
+        //获取写入队列第一条数据
+        ByteArray ba;
+        lock (writeQueue)
+        {
+            ba = writeQueue.First();
+        }
+
+        ba.readIdx += count;
+
+        if(ba.length == 0)
+        {
+            lock (writeQueue)
+            {
+                writeQueue.Dequeue();
+                ba = writeQueue.First();
+
+            }
+        }
+
+        //继续发送
+        if(ba != null)
+        {
+            socket.BeginSend(ba.bytes, ba.readIdx, ba.length,0,SendCallback,socket);
+
+        }else if(isClosing)
+        {
+            socket.Close();
+        }
+
+    }
+    
+    //增加消息监听事件
+    public static void AddMsgListener(string msgName,MsgListener listener)
+    {
+        if (msgListeners.ContainsKey(msgName))
+        {
+            msgListeners[msgName] += listener;
+        }
+        else
+        {
+            msgListeners[msgName] = listener;
+        }
+    }
+
+    //删除消息监听事件
+    public static void RemoveListener(string msgName,MsgListener listener)
+    {
+
+        if (msgListeners.ContainsKey(msgName))
+        {
+            msgListeners[msgName] -= listener;
+
+            if(msgListeners[msgName] == null)
+            {
+                msgListeners.Remove(msgName);
+            }
+        }
+       
+    }
+
+    //消息分发
+    private static void FireMsg(string msgName, byte[] buffer)
+    {
+        if (msgListeners.ContainsKey(msgName))
+        {
+            msgListeners[msgName](buffer);
+        }
+    } 
+
+
 
     public static byte[] intToBytes(int value)
     {
