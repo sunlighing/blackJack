@@ -324,4 +324,39 @@ public static class NetworkManager
         src[0] = (byte)(value & 0xFF);
         return src;
     }
+
+    public static void Update()
+    {
+
+    }
+
+    public static void MsgUpdate()
+    {
+        if(msgCount == 0)
+        {
+            return;
+        }
+
+        for (int i =0; i< MAX_MESSSAGE_FIRE; i++)
+        {
+            byte[] msgBase = null;
+            lock (msgList)
+            {
+                if(msgList.Count > 0)
+                {
+                    msgBase = msgList[0];
+                    msgList.RemoveAt(0);
+                    msgCount--;
+                }
+            }
+            if(msgBase != null)
+            {
+                FireMsg("", msgBase);
+            }
+            else
+            {
+                break; 
+            }
+        }
+    }
 }
